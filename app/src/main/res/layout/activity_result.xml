@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+android:layout_width="match_parent"
+android:layout_height="match_parent"
+android:orientation="vertical"
+android:padding="16dp"
+android:gravity="center">
+
+<TextView
+    android:id="@+id/luminosityTextView"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:text="@string/translating"
+    android:textSize="24sp"
+    android:layout_marginBottom="32dp" />
+
+<ImageView
+    android:id="@+id/capturedImageView"
+    android:layout_width="300dp"
+    android:layout_height="300dp"
+    android:scaleType="centerCrop"
+    android:background="#F0F0F0"
+    android:contentDescription="@string/captured_image" />
+
+<Button
+    android:id="@+id/backButton"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:text="@string/back_to_camera"
+    android:layout_marginTop="32dp" />
+
+</LinearLayout>

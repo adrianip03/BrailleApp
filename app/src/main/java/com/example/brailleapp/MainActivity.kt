@@ -1,11 +1,11 @@
 package com.example.brailleapp
 
 import android.Manifest
-import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.ImageCapture
 import androidx.camera.video.Recorder
@@ -31,9 +31,11 @@ import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
 import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.PermissionChecker
+import java.io.File
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Locale
+import kotlin.io.path.createTempFile
 
 typealias LumaListener = (luma: Double) -> Unit
 
@@ -42,10 +44,9 @@ class MainActivity : AppCompatActivity() {
 
     private var imageCapture: ImageCapture? = null
 
-    private var videoCapture: VideoCapture<Recorder>? = null
-    private var recording: Recording? = null
-
     private lateinit var cameraExecutor: ExecutorService
+
+    private var latestLuminosity: Double = 0.0
 
     private val activityResultLauncher =
         registerForActivityResult(
@@ -67,6 +68,9 @@ class MainActivity : AppCompatActivity() {
         }
     private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnalysis.Analyzer {
 
+        private var lastAnalysisTime = 0L
+        private val analysisInterval = 500L
+
         private fun ByteBuffer.toByteArray(): ByteArray {
             rewind()    // Rewind the buffer to zero
             val data = ByteArray(remaining())
@@ -75,6 +79,13 @@ class MainActivity : AppCompatActivity() {
         }
 
         override fun analyze(image: ImageProxy) {
+            val currentTime = System.currentTimeMillis()
+
+            // Only analyze if enough time has passed since last analysis
+            if (currentTime - lastAnalysisTime < analysisInterval) {
+                image.close()
+                return
+            }
 
             val buffer = image.planes[0].buffer
             val data = buffer.toByteArray()
@@ -101,35 +112,32 @@ class MainActivity : AppCompatActivity() {
 
         // Set up the listeners for take photo and video capture buttons
         viewBinding.imageCaptureButton.setOnClickListener { takePhoto() }
-//        viewBinding.videoCaptureButton.setOnClickListener { captureVideo() }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
 
+    private fun createTempImageFile(): File {
+        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
+            .format(System.currentTimeMillis()) // use timestamp as name
+        val storageDir = cacheDir // save to cache
+
+        return File.createTempFile(
+            name,
+            ".png",
+            storageDir
+        )
+
+    }
 
 
     private fun takePhoto() {
         // Get a stable reference of the modifiable image capture use case
         val imageCapture = imageCapture ?: return
 
-        // Create time stamped name and MediaStore entry.
-        val name = SimpleDateFormat(FILENAME_FORMAT, Locale.US)
-            .format(System.currentTimeMillis())
-        val contentValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
-            if(Build.VERSION.SDK_INT > Build.VERSION_CODES.P) {
-                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/BrailleApp-Image")
-            }
-        }
-
-        // Create output options object which contains file + metadata
-        val outputOptions = ImageCapture.OutputFileOptions
-            .Builder(contentResolver,
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                contentValues)
-            .build()
-
+        // Capture image as png in cache
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(
+            createTempImageFile()
+        ).build()
         // Set up image capture listener, which is triggered after photo has
         // been taken
         imageCapture.takePicture(
@@ -138,19 +146,34 @@ class MainActivity : AppCompatActivity() {
             object : ImageCapture.OnImageSavedCallback {
                 override fun onError(exc: ImageCaptureException) {
                     Log.e(TAG, "Photo capture failed: ${exc.message}", exc)
+                    Toast.makeText(baseContext, "Photo capture failed", Toast.LENGTH_SHORT).show()
                 }
 
-                override fun
-                        onImageSaved(output: ImageCapture.OutputFileResults){
-                    val msg = "Photo capture succeeded: ${output.savedUri}"
-                    Toast.makeText(baseContext, msg, Toast.LENGTH_SHORT).show()
-                    Log.d(TAG, msg)
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    val savedUri = outputFileResults.savedUri
+                    if (savedUri != null) {
+                        showResults(savedUri, latestLuminosity)
+
+                        val msg = "PNG photo captured and saved to cache: $savedUri"
+                        Log.d(TAG, msg)
+
+                    } else {
+                        Toast.makeText(baseContext, "Failed to save PNG image", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         )
     }
 
-    private fun captureVideo() {}
+    private fun showResults(imageUri: Uri, results: Double) {
+        // Start the ResultActivity with the results
+        val intent = Intent(this, ResultActivity::class.java).apply {
+            putExtra(ResultActivity.EXTRA_IMAGE_URI, imageUri.toString())
+            putExtra(ResultActivity.EXTRA_LUMINOSITY, results)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(intent)
+    }
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -174,6 +197,7 @@ class MainActivity : AppCompatActivity() {
                 .build()
                 .also {
                     it.setAnalyzer(cameraExecutor, LuminosityAnalyzer { luma ->
+                        latestLuminosity = luma
                         Log.d(TAG, "Average luminosity: $luma")
                     })
                 }

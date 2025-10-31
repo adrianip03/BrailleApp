@@ -58,4 +58,6 @@ dependencies {
 
     implementation("androidx.camera:camera-view:${camerax_version}")
     implementation("androidx.camera:camera-extensions:${camerax_version}")
+
+    implementation("com.github.bumptech.glide:glide:5.0.5")
 }
