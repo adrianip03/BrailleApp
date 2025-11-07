@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.MediaStore
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.ImageCapture
 import androidx.camera.video.Recorder
@@ -22,6 +23,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.core.Preview
 import androidx.camera.core.CameraSelector
 import android.util.Log
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.ImageProxy
@@ -36,8 +38,9 @@ import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Locale
 import kotlin.io.path.createTempFile
+import com.example.brailleapp.analyzer.LuminosityAnalyzer
+import com.example.brailleapp.utils.ImageAnalysisUtils
 
-typealias LumaListener = (luma: Double) -> Unit
 
 class MainActivity : AppCompatActivity() {
     private lateinit var viewBinding: ActivityMainBinding
@@ -66,35 +69,68 @@ class MainActivity : AppCompatActivity() {
                 startCamera()
             }
         }
-    private class LuminosityAnalyzer(private val listener: LumaListener) : ImageAnalysis.Analyzer {
 
-        private var lastAnalysisTime = 0L
-        private val analysisInterval = 500L
-
-        private fun ByteBuffer.toByteArray(): ByteArray {
-            rewind()    // Rewind the buffer to zero
-            val data = ByteArray(remaining())
-            get(data)   // Copy the buffer into a byte array
-            return data // Return the byte array
+    private fun processSelectedImage(uri: Uri) {
+        val bitmap = ImageAnalysisUtils.uriToBitmap(uri, this)
+        if (bitmap != null) {
+            val luminosity = ImageAnalysisUtils.calculateLuminosityFromBitmap(bitmap)
+            showResults(uri, luminosity)
+        } else {
+            Toast.makeText(this, "Failed to decode image", Toast.LENGTH_SHORT).show()
         }
+    }
 
-        override fun analyze(image: ImageProxy) {
-            val currentTime = System.currentTimeMillis()
+    private val pickMedia = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            Log.d("PhotoPicker", "Selected URI: $uri")
+            processSelectedImage(uri)
+        } else {
+            Log.d("PhotoPicker", "No media selected")
+        }
+    }
 
-            // Only analyze if enough time has passed since last analysis
-            if (currentTime - lastAnalysisTime < analysisInterval) {
-                image.close()
-                return
+    // Legacy gallery launcher for API 24-32
+    private val legacyGalleryLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) {
+            result.data?.data?.let { uri ->
+                processSelectedImage(uri)
             }
+        }
+    }
 
-            val buffer = image.planes[0].buffer
-            val data = buffer.toByteArray()
-            val pixels = data.map { it.toInt() and 0xFF }
-            val luma = pixels.average()
+    // Storage permission launcher for API 24-29
+    private val requestStoragePermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (isGranted) {
+            openLegacyGallery()
+        } else {
+            Toast.makeText(this, "Storage permission required to access gallery", Toast.LENGTH_SHORT).show()
+        }
+    }
 
-            listener(luma)
+    private fun launchLegacyGalleryIntent() {
+        val intent = Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+        legacyGalleryLauncher.launch(intent)
+    }
 
-            image.close()
+    private fun launchOpenDocumentIntent() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        legacyGalleryLauncher.launch(intent)
+    }
+
+    private fun openLegacyGallery() {
+        // For less than API 29, we need READ_EXTERNAL_STORAGE permission
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
+                launchLegacyGalleryIntent()
+            } else {
+                requestStoragePermissionLauncher.launch(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        } else {
+            // For API 30-32, can use ACTION_OPEN_DOCUMENT without permission
+            launchOpenDocumentIntent()
         }
     }
 
@@ -110,8 +146,9 @@ class MainActivity : AppCompatActivity() {
             requestPermissions()
         }
 
-        // Set up the listeners for take photo and video capture buttons
+        // Set up the listeners for take photo and media library buttons
         viewBinding.imageCaptureButton.setOnClickListener { takePhoto() }
+        viewBinding.galleryButton.setOnClickListener { getPhotoFromMediaLibrary() }
 
         cameraExecutor = Executors.newSingleThreadExecutor()
     }
@@ -129,6 +166,16 @@ class MainActivity : AppCompatActivity() {
 
     }
 
+    private fun getPhotoFromMediaLibrary() {
+        // Check if system photo picker is available (API 33+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Use modern photo picker (no permissions needed)
+            pickMedia.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } else {
+            // Use legacy method for API 24-32
+            openLegacyGallery()
+        }
+    }
 
     private fun takePhoto() {
         // Get a stable reference of the modifiable image capture use case
@@ -177,8 +224,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
-
-
 
         cameraProviderFuture.addListener({
             // Used to bind the lifecycle of cameras to the lifecycle owner
